@@ -1,0 +1,178 @@
+import bpy
+import os
+from mathutils import Vector, Euler
+from math import radians
+
+bl_info = {
+    "name": "Texture + 3D Text Panel (Separated)",
+    "blender": (2, 93, 0),
+    "category": "Object",
+}
+
+class ApplyOnlyTextureOperator(bpy.types.Operator):
+    bl_idname = "object.apply_only_texture"
+    bl_label = "Apply PNG Texture"
+    bl_description = "Select a PNG texture and apply it to selected object"
+    filepath: bpy.props.StringProperty(subtype="FILE_PATH")
+
+    def execute(self, context):
+        obj = context.active_object
+        if not obj or obj.type != 'MESH':
+            self.report({'WARNING'}, "Lütfen bir mesh obje seçin.")
+            return {'CANCELLED'}
+
+        if not os.path.exists(self.filepath):
+            self.report({'ERROR'}, "Dosya bulunamadı.")
+            return {'CANCELLED'}
+
+        mat = obj.active_material
+        if not mat or not mat.use_nodes:
+            self.report({'ERROR'}, "Obje geçerli bir material içermiyor veya nodes aktif değil.")
+            return {'CANCELLED'}
+
+        nodes = mat.node_tree.nodes
+        image_node = None
+
+        for node in nodes:
+            if node.type == 'TEX_IMAGE':
+                image_node = node
+                break
+
+        if not image_node:
+            image_node = nodes.new(type='ShaderNodeTexImage')
+            image_node.location = (-300, 300)
+            bsdf = next((n for n in nodes if n.type == 'BSDF_PRINCIPLED'), None)
+            if bsdf:
+                mat.node_tree.links.new(image_node.outputs['Color'], bsdf.inputs['Base Color'])
+
+        image = bpy.data.images.load(self.filepath, check_existing=True)
+        image_node.image = image
+
+        self.report({'INFO'}, f"Texture uygulandı: {image.name}")
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+class Add3DTextOperator(bpy.types.Operator):
+    bl_idname = "object.add_3d_text"
+    bl_label = "Add 3D Sign Text"
+    bl_description = "Add 3D extruded text on selected object"
+
+    def execute(self, context):
+        obj = context.active_object
+        if not obj or obj.type != 'MESH':
+            self.report({'WARNING'}, "Lütfen bir mesh obje seçin.")
+            return {'CANCELLED'}
+
+        def split_text(text, line_length=8):
+            return '\n'.join(text[i:i+line_length] for i in range(0, len(text), line_length))
+
+        raw_text = context.scene.sign_text_input
+        formatted_text = split_text(raw_text)
+
+        bpy.ops.object.text_add()
+        text_obj = bpy.context.object
+        text_obj.name = "SignText"
+        text_obj.data.body = formatted_text
+        text_obj.data.extrude = 0.1  
+        text_obj.data.align_x = 'CENTER'
+        text_obj.data.align_y = 'CENTER'
+
+        font_path = bpy.path.abspath(context.scene.font_file_path)
+        if font_path and os.path.exists(font_path):
+            font = bpy.data.fonts.load(font_path)
+            text_obj.data.font = font
+        else:
+            self.report({'WARNING'}, f"Font dosyası bulunamadı: {font_path}")
+            return {'CANCELLED'}
+
+        bpy.ops.object.select_all(action='DESELECT')
+        text_obj.select_set(True)
+        bpy.context.view_layer.objects.active = text_obj
+        bpy.ops.object.origin_set(type='ORIGIN_CENTER_OF_MASS', center='BOUNDS')
+
+        text_obj.location = Vector((-0.51623, 1.8449, 0.93302))
+        text_obj.rotation_euler = Euler((
+            radians(0.074771),
+            radians(-16.534),
+            radians(-0.25436)
+        ), 'XYZ')
+        text_obj.scale = (0.140, 0.140, 0.140)
+
+        mat_name = "SignTextMaterial"
+        mat = bpy.data.materials.get(mat_name)
+        if not mat:
+            mat = bpy.data.materials.new(name=mat_name)
+            mat.use_nodes = True
+
+        nodes = mat.node_tree.nodes
+        principled = nodes.get("Principled BSDF")
+        if principled:
+            color = context.scene.text_color
+            principled.inputs["Base Color"].default_value = (color[0], color[1], color[2], 1)
+
+        if len(text_obj.data.materials) == 0:
+            text_obj.data.materials.append(mat)
+        else:
+            text_obj.data.materials[0] = mat
+
+        text_obj.parent = obj
+
+        self.report({'INFO'}, f"3D yazı eklendi: '{raw_text}'")
+        return {'FINISHED'}
+
+class TextureAndTextPanel(bpy.types.Panel):
+    bl_label = "Texture & 3D Text Panel"
+    bl_idname = "OBJECT_PT_texture_text_sep"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Skin Otomation'
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("object.apply_only_texture", icon='IMAGE_DATA')
+        layout.prop(context.scene, "sign_text_input")
+        layout.prop(context.scene, "font_file_path", text="Font Dosyası")
+        layout.prop(context.scene, "text_color", text="Text Color")
+        layout.operator("object.add_3d_text", icon='FONT_DATA')
+
+def register():
+    bpy.utils.register_class(ApplyOnlyTextureOperator)
+    bpy.utils.register_class(Add3DTextOperator)
+    bpy.utils.register_class(TextureAndTextPanel)
+
+    bpy.types.Scene.sign_text_input = bpy.props.StringProperty(
+        name="Sign Text",
+        description="Tabelaya yazılacak yazı",
+        default="HOŞGELDİN"
+    )
+
+    bpy.types.Scene.font_file_path = bpy.props.StringProperty(
+        name="Font File",
+        description=".otf veya .ttf font dosyası seçin",
+        subtype='FILE_PATH',
+        default=""
+    )
+
+    bpy.types.Scene.text_color = bpy.props.FloatVectorProperty(
+        name="Text Color",
+        subtype='COLOR',
+        default=(1.0, 1.0, 1.0),
+        min=0.0, max=1.0,
+        description="3D yazının rengi"
+    )
+
+
+def unregister():
+    bpy.utils.unregister_class(ApplyOnlyTextureOperator)
+    bpy.utils.unregister_class(Add3DTextOperator)
+    bpy.utils.unregister_class(TextureAndTextPanel)
+
+    del bpy.types.Scene.sign_text_input
+    del bpy.types.Scene.font_file_path
+    del bpy.types.Scene.text_color
+
+if __name__ == "__main__":
+    register()
